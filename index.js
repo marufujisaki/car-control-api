@@ -131,6 +131,112 @@ app.get("/jobs/:userId", async (req, res) => {
   }
 });
 
+app.put('/jobs/:jobId', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { jobId } = req.params
+      const { name, date, parts, laborCost, generalObservations } = req.body;
+      const totalPartsCost = parts.reduce((sum, part) => sum + part.cost, 0);
+      let totalCost = totalPartsCost + laborCost;
+
+      await client.query('BEGIN');
+
+      // Update job
+      await client.query(
+          `UPDATE jobs 
+           SET name = $1, date = $2, labor_cost = $3, total_cost = $4, general_observations = $5
+           WHERE id = $6`,
+          [name, date, laborCost, totalCost, generalObservations, jobId]
+      );
+
+      // Get existing part IDs from DB
+      const existingPartsRes = await client.query(
+          `SELECT id FROM parts WHERE job_id = $1`,
+          [jobId]
+      );
+      const existingPartIds = existingPartsRes.rows.map(r => r.id);
+
+      // Track IDs sent in request
+      const incomingPartIds = parts.filter(p => p.id).map(p => p.id);
+
+      // Delete parts that are in DB but not in the request
+      const partsToDelete = existingPartIds.filter(id => !incomingPartIds.includes(id));
+      if (partsToDelete.length > 0) {
+          await client.query(
+              `DELETE FROM parts WHERE id = ANY($1::int[])`,
+              [partsToDelete]
+          );
+      }
+
+      // Upsert parts
+      for (let part of parts) {
+          if (part.id) {
+              // Update
+              await client.query(
+                  `UPDATE parts
+                   SET name = $1, type = $2, cost = $3, observations = $4
+                   WHERE id = $5 AND job_id = $6`,
+                  [part.name, part.type, part.cost, part.observations, part.id, jobId]
+              );
+          } else {
+              // Insert
+              await client.query(
+                  `INSERT INTO parts (job_id, name, type, cost, observations)
+                   VALUES ($1, $2, $3, $4, $5)`,
+                  [jobId, part.name, part.type, part.cost, part.observations]
+              );
+          }
+      }
+
+      const finalExistingParts = await client.query(
+        `SELECT cost FROM parts WHERE job_id = $1`,
+        [jobId]
+      );
+      
+      const finalPartsCost = finalExistingParts.rows.map(r => Number(r.cost)).reduce((sum, cost) => sum + cost, 0);
+      totalCost = finalPartsCost + Number(laborCost);
+
+      await client.query(
+        `UPDATE jobs 
+         SET total_cost = $1 
+         WHERE id = $2`,
+        [totalCost, jobId]
+      );
+
+      await client.query('COMMIT');
+      res.status(200).json({ message: 'Job and parts updated successfully' });
+  } catch (error) {
+      await client.query('ROLLBACK');
+      console.error(error);
+      res.status(500).json({ error: 'Error updating job' });
+  } finally {
+      client.release();
+  }
+});
+
+
+app.delete('/jobs/:jobId', async (req, res) => {
+  const client = await pool.connect();
+  try {
+      const { jobId } = req.params;
+
+      await client.query('BEGIN');
+
+      await client.query(`DELETE FROM parts WHERE job_id = $1`, [jobId]);
+      await client.query(`DELETE FROM jobs WHERE id = $1`, [jobId]);
+
+      await client.query('COMMIT');
+      res.status(200).json({ message: 'Job deleted successfully' });
+  } catch (error) {
+      await client.query('ROLLBACK');
+      console.error(error);
+      res.status(500).json({ error: 'Error deleting job' });
+  } finally {
+      client.release();
+  }
+});
+
+
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
