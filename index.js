@@ -77,10 +77,16 @@ app.post("/jobs", async (req, res) => {
 
     await client.query("BEGIN");
 
+    // Find vehicle
+    const id = await client.query(
+      `SELECT id FROM vehicles WHERE uuid = $1`,
+      [vehicleId]
+    );
+
     const jobInsert = await client.query(
       `INSERT INTO jobs (vehicle_id, name, date, labor_cost, total_cost, general_observations)
              VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [vehicleId, name, date, laborCost, totalCost, generalObservations]
+      [id.rows[0].id, name, date, laborCost, totalCost, generalObservations]
     );
 
     const jobId = jobInsert.rows[0].id;
@@ -110,7 +116,9 @@ app.get("/jobs/:vehicleId", async (req, res) => {
   try {
     const { vehicleId } = req.params;
     const jobsResult = await client.query(
-      `SELECT * FROM jobs WHERE vehicle_id = $1`,
+      `SELECT jobs.* FROM jobs 
+        INNER JOIN vehicles ON jobs.vehicle_id = vehicles.id 
+          WHERE vehicles.uuid = $1`,
       [vehicleId]
     );
 
